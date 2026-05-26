@@ -1,0 +1,630 @@
+/*
+MAIN TABLES:
+CHARM_CONCORDANCE
+CHARM_CONCORDANCE_MERCY (uses their standards)
+CHARM_DENOMINATOR
+CHARM_DETAILS
+CHARM_DIAGNOSIS
+*/
+
+
+select * from raw_Details_JAN26 order by Check_IN_DT
+
+/* This isn't needed on a regular basis
+--merge all raw data tables into one
+select * into raw_Details_OCT20_to_MAR25_antibiotic_nonantibiotic from (
+
+select * from [202010-202201]
+union 
+select * from [202201-202212]
+union
+select * from [202301-202306]
+union
+select * from raw_Details_JUL23_to_MAR25
+) a ;
+*/
+
+
+-- sql script to verify the column datatypes
+SELECT COLUMN_NAME,DATA_TYPE
+FROM information_schema.columns
+WHERE table_name = 'raw_Details_JAN26' order by COLUMN_NAME
+
+------------------------------------------------------------------------------
+--Scripts to alter and update column datatypes if needed
+ALTER TABLE details_OCT26
+ADD DRAWDT_CLEAN datetime;
+
+UPDATE details_OCT20_to_MAR25
+SET DRAWDT_CLEAN = TRY_CAST(DRAWDT AS date);
+
+SELECT DRAWDT
+FROM details_OCT20_to_MAR25
+WHERE DRAWDT_CLEAN IS NOT NULL;
+
+UPDATE details_OCT20_to_MAR25
+SET DRAWDT_CLEAN = DATEADD(DAY, TRY_CAST(DRAWDT AS float) - 2, '1899-12-30')
+WHERE ISNUMERIC(DRAWDT) = 1
+------------------------------------------------------------------------------
+
+select distinct Pharm_Class_Name from antibioti_yes where Pharm_Class_Name not in (select Pharm_Class_Name from raw_Details_JAN26)
+
+--create details table using the raw details table
+select a.* 
+--into details_JAN26
+from raw_Details_JAN26 a inner join
+antibioti_yes ay on a.Pharm_Class_Name=ay.Pharm_Class_Name and ay.antibiotic=1
+
+
+--adding prescription id column if not available
+select prescriptionid from details_DEC25 order by PrescriptionID desc
+alter table details_JAN26 add prescriptionid int identity(381224,1) --get last prescriptionId from previous table and add one
+
+--create the diagnosis table from the details table
+select * 
+--into diagnosis_JAN26 
+from (
+select MaskedVisitID, ICD10dx_1,DiagDesc1 from details_JAN26
+union 
+select MaskedVisitID, ICD10dx_2,DiagDesc2 from details_JAN26
+union
+select MaskedVisitID, ICD10dx_3,DiagDesc3 from details_JAN26)a
+
+select * from diagnosis_JAN26
+select * from details_JAN26 order by Check_IN_DT
+
+
+--Initiation of building charm tables: before building the tables, validate the provider, facility, frequency and antibiotic name in the current month table and mapping tables are available
+select distinct Frequency from details_JAN26 where Frequency not in (select distinct b.Original_Frequency from Frequency_Mapping b)
+select distinct provider_name from details_JAN26 where provider_name not in (select distinct b.provider_name from provider_mapping b)
+select distinct facility from details_JAN26 where facility not in (select distinct b.facility from facility_mapping b)
+select distinct department from details_JAN26 where department not in (select distinct b.department from department_mapping b)
+
+
+--update frequency mapping table
+INSERT INTO Frequency_Mapping
+VALUES
+('3 times daily after meals',3),
+('As needed',NULL),
+('Continuous PRN',NULL),
+('Daily after dinner',1),
+('Every 28 days',0.036),
+('Every 3 hours PRN',8),
+('Every 3 months',0.01),
+('Every 8 weeks',0.018),
+('Every morning before breakfast',1),
+('See admin instructions',NULL); 
+
+--update provider mapping table
+select * from provider_mapping order by providerid desc
+INSERT INTO provider_mapping
+VALUES
+('FOSTER, KERI', 3055),
+('GRADY, WILLIAM', 3056),
+('RICE, DEJA', 3057),
+('ROBERSON, HILLARY A', 3058),
+('RODRIGUEZ-RAMIREZ, ADRIANA', 3059),
+('WESTENBROEK, SARAH', 3060);
+
+INSERT INTO department_mapping
+VALUES
+('MGRLK MHPP PRIMARY CARE KENTWOOD');
+
+select left(quantity,patindex( '%[^0-9]%', quantity)-1),
+case when quantity like '%g%' then 'g' 
+	 when quantity like '%tab%' then 'tablet'
+	 when quantity like '%ml%' then 'ml' 
+	 when quantity like '%cap%' then 'capsule'
+
+	 when quantity like '%bottle%' then 'bottle' 
+	 when quantity like '%troche%' then 'troche'
+	 when quantity like '%each%' then 'tablet' 
+	 when quantity like '%package%' then 'package'
+
+	 when quantity like '%kit%' then 'kit' 
+	 when quantity like '%million%' then 'million units'
+	 when quantity like '%each%' then 'tablet' 
+	 when quantity like '%package%' then 'package'
+	 else null
+	 end as 'tab Unit'
+from details_JAN26
+
+--Updates rtr tables
+select * into rtr_general from Bronson.dbo.rtr
+select * into diagnosis_mapping_MB from Bronson.dbo.diagnosis_mapping_MB
+select * into MB_To_RTR from Bronson.dbo.MB_To_RTR
+
+-------------------------------------------------------------------------------------------------------------------------------------------
+-------------------------------------------------------------------------Details-----------------------------------------------------------
+select 
+concat('MER',lk.PrescriptionID) as PrescriptionID,
+CONCAT('MER',lk.MaskedVisitID) as EncounterID,
+CONCAT('MER',lk.MaskedPatID) as PatientID,
+fmm.facilityid as facility,
+lk.Gender as Sex,
+Age,
+case when age between 0 and 10 then '0 to 10'
+					 when age between 10 and 20 then '11 to 20'
+					 when age between 20 and 30 then '21 to 30'
+					 when age between 30 and 40 then '31 to 40'
+					 when age between 40 and 50 then '41 to 50'
+					 when age between 50 and 60 then '51 to 60'
+					 when age between 60 and 70 then '61 to 70'
+					 when age between 70 and 80 then '71 to 80'
+					 when age >80 then 'Above 80'					 
+					 else Null
+					 end as 'Age_Range',
+case when age>=18 then 'ADULT' when age<18 then 'CHILD' else null end as Age_group,
+case when Race is null or race='UNKNOWN' or race='NULL' or race='REFUSED' or race='Unable to respond' then 'Unknown'
+					 when race ='AMERICAN INDIAN - ALASKA NATIVE' then 'American Indian or Alaska Native'
+					 when race ='MORE THAN ONE RACE' then 'Other'
+					 when race ='Native Hawaiian or Other Pacific Islander' or race ='Native Hawaiian' or race= 'Other Pacific Islander' or race='Am Indian/Alask'
+					 then 'Native Hawaiian and Other Pacific Islander'
+					 when race ='English' then 'White'	
+					 when race ='Asian Indian' or race='Filipino' or race='Vietnamese' or race='Korean' or race='Chinese'
+					 then 'Asian'
+					 else race
+					 end as Race,
+Null as Ethnicity,
+lk.Check_IN_DT as Encounter_Date,
+lk.OrderMnemonic as Antibiotic_Raw,
+case when lk.GenericDrugName = 'SULFAMETHOXAZOLE/TRIMETHOPRIM' then 'SULFAMETHAZOLE/TRIMETHROPRIM'
+					when lk.GenericDrugName = 'AMOXICILLIN/POTASSIUM CLAV' then 'AMOXICILLIN/CLAVULANATE'
+					else lk.GenericDrugName
+					end as Antibiotic_Name,
+'Y' as IsAntibiotic,
+lk.strength as Antibiotic_Dose,
+case	when am.unit='mg/5ml' then (left(quantity,patindex( '%[^0-9]%', Quantity)-1))*am.dose_mg/5
+		when am.unit='mg/10ml' then (left(Quantity,patindex( '%[^0-9]%', Quantity)-1))*am.dose_mg/10
+		when am.unit='mg/3ml' then (left(Quantity,patindex( '%[^0-9]%', Quantity)-1))*am.dose_mg/3
+		when am.unit='mg/8.4ml' then (left(Quantity,patindex( '%[^0-9]%', Quantity)-1))*am.dose_mg/8.4
+		when am.unit='mg/ml' then (left(Quantity,patindex( '%[^0-9]%', Quantity)-1))*am.dose_mg/1
+		when am.unit='gram' then (left(Quantity,patindex( '%[^0-9]%', Quantity)-1))*am.dose_mg *1000
+		else dose_mg*(left(Quantity,patindex( '%[^0-9]%', Quantity)-1))
+		end as total_dose,
+null as dose_in_mg,
+am.unit antibiotic_unit_of_measure,
+(left(quantity,patindex( '%[^0-9]%', Quantity)-1)) as Quantity,
+null as Duration,
+lk.Frequency as Original_Frequency,
+fm.Revised_Frequency as Frequency,
+null as Route,
+lk.WeightKG as Weight_in_KG,
+lk.Enc_Type Encounter_Type,
+lk.Payor_Name as Insurance_Type,
+'' as Insurance_Name ,
+lk.Provider_Type as  Provider_Type,
+pm.providerid as Provider_Name,
+'' Antibiotic_Allergies,
+lk.eGFR as GFR_A,
+lk.DrawDT as GFR_A_Date,
+null as capsule_based_overall_dose,
+case when lk.eGFR<15 then '<15' when lk.eGFR between 15 and 29 then '15-29' when lk.eGFR between 30 and 44 then '30-44' when lk.eGFR between 45 and 59 then '45-59'
+when lk.eGFR between 60 and 89 then '60-89' when lk.eGFR >89 then '90 or higher' else null end as GFR_category,
+dm.departmentid as Department
+-- into CHARM_DETAILS_JAN26
+from details_JAN26 lk
+left join dose_mapping am on lk.STRENGTH=am.strength
+left join Frequency_Mapping fm on fm.Original_Frequency=lk.Frequency
+left join provider_mapping pm on lk.provider_name = pm.provider_name
+left join facility_mapping fmm on lk.facility = fmm.facility
+left join department_mapping dm on lk.department = dm.department
+
+
+--Check for unique unit or measure values
+--IGNORE % AND unit/ml
+select distinct antibiotic_unit_of_measure from CHARM_DETAILS_JAN26
+
+--Updates dose_in_mg column in CHARM_DETAILS table for each unique unit of measure value 
+UPDATE CHARM_DETAILS_JAN26 
+SET dose_in_mg = case when antibiotic_unit_of_measure = 'gram' then total_dose / Quantity
+                                                   when antibiotic_unit_of_measure = 'mg/2ml' then (total_dose / Quantity) * 2
+                                                   when antibiotic_unit_of_measure = 'mg/3ml' then (total_dose / Quantity) * 3
+												   when antibiotic_unit_of_measure = 'mg/4ml' then (total_dose / Quantity) * 4
+                                                   when antibiotic_unit_of_measure = 'mg/5ml' then (total_dose / Quantity) * 5
+												   when antibiotic_unit_of_measure = 'mg/8.4ml' then (total_dose / Quantity) * 8.4
+												   when antibiotic_unit_of_measure = 'mg/10ml' then (total_dose / Quantity) * 10
+												   when antibiotic_unit_of_measure = 'mg/ml' then total_dose / Quantity
+												   when antibiotic_unit_of_measure = 'mg/mL' then total_dose / Quantity
+												   when antibiotic_unit_of_measure = 'mg' then total_dose / Quantity
+												   when antibiotic_unit_of_measure = 'mg-' then total_dose / Quantity
+												   else NULL end
+
+--Updates Duration column in CHARM_DETAILS table for each unique unit of measure value
+UPDATE CHARM_DETAILS_JAN26
+SET Duration = case when antibiotic_unit_of_measure = 'gram' then Quantity / Frequency
+                                                 when antibiotic_unit_of_measure = 'mg' then Quantity / Frequency
+                                                 when antibiotic_unit_of_measure = 'mg/2ml' then Quantity / (Frequency * 2)
+												 when antibiotic_unit_of_measure = 'mg/3ml' then Quantity / (Frequency * 3)
+												 when antibiotic_unit_of_measure = 'mg/4ml' then Quantity / (Frequency * 4)
+												 when antibiotic_unit_of_measure = 'mg/5ml' then Quantity / (Frequency * 5)
+												 when antibiotic_unit_of_measure = 'mg/8.4ml' then Quantity / (Frequency * 8.4)
+												 when antibiotic_unit_of_measure = 'mg/10ml' then Quantity / (Frequency * 10)
+												 when antibiotic_unit_of_measure = 'mg/ml' then Quantity / Frequency
+												 when antibiotic_unit_of_measure = 'mg/mL' then Quantity / Frequency
+												 when antibiotic_unit_of_measure = 'mg-' then Quantity / Frequency
+												 else NULL end
+
+--Ensure columns updated properly
+select * from CHARM_DETAILS_DEC25 order by Duration, antibiotic_unit_of_measure
+
+
+--for future -- some cases if you have to run update query at some point this can be helpful, only on some cases need this query
+select icd10dx_1,COUNT(1) from CHARM_DETAILS_JUL2025 group by icd10dx_1 order by icd10dx_1
+select distinct Original_Frequency,Frequency from CHARM_DETAILS_JUL2025 order by Frequency
+
+select Original_Frequency, Frequency, COUNT(1) from CHARM_DETAILS_JUN2025 group by  Original_Frequency, Frequency order by Frequency
+select * from dose_mapping
+
+
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+-------------------------------------------------------------------------------------final diagnosis table------------------------------------------------------------------------------------------------------------------
+
+select distinct
+CONCAT('MER',lk.MaskedVisitID) as EncounterID,
+lk.DiagDesc1 as Diagnosis_Orginal,
+lk.ICD10dx_1 as Indication_Code,
+mb.Diagnosis as Diagnosis_Grouping,
+case when mb.antibiotic_needed= 1 or mb.antibiotic_needed = 2 then mb.Diagnosis
+	 when mb.antibiotic_needed=3 then lk.DiagDesc1
+	 when mb.icd_code is null then 'Unspecified'
+	 end as Diagnosis_MS,
+mr.rtr_Diagnosis as Diagnosis_RTR,
+mb.antibiotic_needed
+--into CHARM_DIAGNOSIS_JAN26
+from diagnosis_JAN26 lk
+left join (select distinct icd_code,diagnosis,antibiotic_needed from diagnosis_mapping_mb) mb on lk.ICD10dx_1=mb.icd_code
+left join mb_to_rtr mr on mb.diagnosis=mr.diagnosis 
+order by mr.rtr_diagnosis
+
+delete  from CHARM_DIAGNOSIS_JAN26 where encounterid in (
+select encounterid from CHARM_DIAGNOSIS_JAN26 cd where encounterid in (select encounterid from CHARM_DIAGNOSIS_JAN26 where Diagnosis_Grouping='Non-infectious')
+and Diagnosis_Grouping<>'Non-infectious')
+and Diagnosis_Grouping='Non-infectious'
+
+delete  from CHARM_DIAGNOSIS_JAN26 where encounterid in (
+select encounterid from CHARM_DIAGNOSIS_JAN26 cd where encounterid in (select encounterid from CHARM_DIAGNOSIS_JAN26 where Diagnosis_Grouping is null)
+and Diagnosis_Grouping is not null)
+and Diagnosis_Grouping is null
+
+SELECT * FROM CHARM_DIAGNOSIS_JAN26
+
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+--all the icd codes missing from mike and ben file
+/*
+select distinct
+Indication_Name as Diagnosis_Orginal,
+Indication_Code
+from bronson0228 lk
+left join (select distinct icd_code,diagnosis,antibiotic_needed from diagnosis_mapping_mb) mb on lk.Indication_Code=mb.icd_code
+left join mb_to_rtr mr on mb.diagnosis=mr.diagnosis
+where mb.ICD_Code is null and Indication_Code is not null
+order by Indication_Code
+*/
+
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+---------------------------------------------------------------------------------Concordancy table-----------------------------------------------------------------------------------------------------------------
+
+
+SELECT distinct CC.*,
+case when CC.[Drug Choice]='Concordant Drug Choice' and cc.kg_based_min=1 and cc.kg_based_max=1 and 
+				(
+					(cc.Overall_Dose =cc.Weight_in_KG*cc.[RTR Min])
+				 or (cc.Overall_Dose =cc.Weight_in_KG*cc.[RTR Max])
+				 or (cc.Overall_Dose between cc.Weight_in_KG*cc.[RTR Min] and cc.Weight_in_KG*cc.[RTR Max])
+				)
+	 then 'Concordant Dosing'
+
+	 when CC.[Drug Choice]='Concordant Drug Choice' and cc.kg_based_max=0 and cc.kg_based_min=1 and
+				(
+					(cc.Overall_Dose =cc.Weight_in_KG*cc.[RTR Min]) 
+				 or (cc.Overall_Dose =cc.[RTR Max]) 
+				 or (cc.Overall_Dose between cc.Weight_in_KG*cc.[RTR Min] and cc.[RTR Max])
+				)
+	 then 'Concordant Dosing'
+
+	 when CC.[Drug Choice]='Concordant Drug Choice' and cc.kg_based_min=0 and cc.kg_based_max=1 and
+				(
+					(cc.Overall_Dose =cc.[RTR Max])
+				 or (cc.Overall_Dose =cc.Weight_in_KG*cc.[RTR Max])
+				 or (cc.Overall_Dose between cc.[RTR Min] and cc.Weight_in_KG*cc.[RTR Max])
+				)
+	 then 'Concordant Dosing'
+
+	 when CC.[Drug Choice]='Concordant Drug Choice' and cc.kg_based_max =0 and cc.kg_based_min=0 and
+				(
+					(cc.Overall_Dose =cc.[RTR Min])
+				 or (cc.Overall_Dose =cc.[RTR Max])
+				 or(cc.Overall_Dose between cc.[RTR Min] and cc.[RTR Max]))
+	 then 'Concordant Dosing'
+
+	 when CC.[Drug Choice]='Concordant Drug Choice' and  cc.kg_based_max=1 and cc.kg_based_min=1 and
+		cc.Overall_Dose>cc.Weight_in_KG*cc.[RTR Max]
+	 then 'Higher Than Recommended'
+
+	 when CC.[Drug Choice]='Concordant Drug Choice' and  cc.kg_based_max=0 and cc.kg_based_min=1 and
+		cc.Overall_Dose>cc.[RTR Max] 
+	 then 'Higher Than Recommended'
+
+	 when CC.[Drug Choice]='Concordant Drug Choice' and  cc.kg_based_max=1 and cc.kg_based_min=0 and
+		cc.Overall_Dose>cc.Weight_in_KG*cc.[RTR Max] 
+	 then 'Higher Than Recommended'
+
+	 when CC.[Drug Choice]='Concordant Drug Choice' and  cc.kg_based_max=0 and cc.kg_based_min=0 and
+		Overall_Dose>cc.[RTR Max] 
+	 then 'Higher Than Recommended'
+
+	 when CC.[Drug Choice]='Concordant Drug Choice' and  cc.kg_based_min=1 and cc.kg_based_max=1 and
+		cc.Overall_Dose<cc.Weight_in_KG*cc.[RTR Min] 
+	 then 'Lower Than Recommended'
+
+	 when CC.[Drug Choice]='Concordant Drug Choice' and  cc.kg_based_min=0 and cc.kg_based_max=1 and
+		cc.Overall_Dose<cc.[RTR Min] 
+	 then 'Lower Than Recommended'
+
+	 when CC.[Drug Choice]='Concordant Drug Choice' and  cc.kg_based_min=1 and cc.kg_based_max=0 and
+		cc.Overall_Dose<cc.Weight_in_KG*cc.[RTR Min] 
+	 then 'Lower Than Recommended'
+
+	 when CC.[Drug Choice]='Concordant Drug Choice' and  cc.kg_based_max=0 and cc.kg_based_min=0 and
+		Overall_Dose<cc.[RTR Min]
+	 then 'Lower Than Recommended'
+
+	 else 'Incomplete Information'
+	 end as Overall_Dosing_comparision
+--into CHARM_CONCORDANCE_JAN26
+FROM 
+		(
+
+		select distinct 
+		sd.PrescriptionID,
+		sd.dose_in_mg as Single_Dose,
+		sd.dose_in_mg*sd.Duration*sd.Frequency as Overall_Dose,
+		sd.capsule_based_overall_dose,		
+		sd.dose_in_mg*sd.Frequency as Daily_Dose,
+		sd.Age_group,
+		sd.Duration,
+		case when r.kg_based_max =1 then 'Kg/mg' else 'mg' end as Overall_Dose_Unit,
+		case when r.kg_based_max =1 then (dose_in_mg*sd.Duration*sd.Frequency)/Weight_in_KG else dose_in_mg*sd.Duration*sd.Frequency end as Overall_Dose_GauntChart,
+		r.Indication as RTR_Indication,
+		r.[Rx Name] as RTR_RxName,
+		sdg.Diagnosis_Grouping as Diagnosis_Group,
+		sd.Antibiotic_Name,
+		r.[Min Duration (days)],
+		r.[Max Duration (days)],
+		r.[RTR Min],
+		r.[RTR Max],
+		r.[Min Daily Dose (mg)] as Rtr_MinDailyDose,
+		r.[Max Daily Dose (mg)] as Rtr_MaxDailyDose,
+		r.kg_based_max,
+		r.kg_based_min,
+		sd.Weight_in_KG,
+		--sd.age_group,
+		case when sdg.Diagnosis_Grouping= r.indication and sd.Antibiotic_Name=r.[Rx Name] and sd.Age_group=r.[Age Group] then 'Concordant Drug Choice'
+			 else 'Discordant Drug Choice'
+			 end as 'Drug Choice'
+		from CHARM_DETAILS_JAN26 sd 
+		inner join CHARM_DIAGNOSIS_JAN26 sdg on sd.EncounterID=sdg.EncounterID 
+		left join rtr_general r on sdg.Diagnosis_Grouping= r.Indication and sd.Antibiotic_Name=r.[Rx Name] and r.[Age Group]=sd.age_group
+		where sdg.Diagnosis_Grouping in (select distinct Indication from rtr_general)
+)CC 
+where Antibiotic_Name is not null 
+order by cc.[Drug Choice],Overall_Dosing_comparision
+
+-------------------Denominator------------------------------------------------------------------
+
+
+select distinct
+CONCAT('MER',lk.MaskedVisitID) as EncounterID,
+CONCAT('MER',lk.MaskedPatID) as PatientID,
+lk.Check_IN_DT as Encounter_Date,
+fm.facilityid as Facility,
+dm.departmentid as Department,
+pm.providerid as Provider,
+lk.Enc_Type as Encounter_Type,
+cd.Antibiotic_Name,
+case when cd.Antibiotic_Name is not null then 1 else 0 end as antibiotic_or_nonantibiotic
+--into CHARM_DENOMINATOR_JAN26
+from raw_Details_JAN26 lk
+left join CHARM_DETAILS_JAN26 cd on CONCAT('MER',lk.MaskedVisitID)=cd.EncounterID
+left join provider_mapping pm on lk.Provider_Name = pm.provider_name
+left join facility_mapping fm on lk.Facility = fm.facility
+left join department_mapping dm on lk.Department = dm.department
+
+
+
+--Check for providers and facilities not in respective mapping tables and update if needed
+select distinct [Provider] from CHARM_DENOMINATOR_JAN26 where [Provider] not in (select distinct b.providerid from provider_mapping b)
+select distinct facility from CHARM_DENOMINATOR_JAN26 where facility not in (select distinct b.facilityid from facility_mapping b)
+
+
+--update provider_mapping table
+select * from provider_mapping order by providerid desc
+INSERT INTO provider_mapping
+VALUES
+('CAO, TIENNGA N', 2098),
+('CROSS, HANNAH', 2099),
+('MHMLC MHPP LAKESHORE MEDICAL NURSE', 3000);
+
+--update facility mapping table
+select * from facility_mapping order by facilityid
+INSERT INTO facility_mapping 
+VALUES
+('ZZZ MHNOW MHPP NORTH OTTAWA FAMILY MEDICINE SUITE 103'),
+('MGRPI ACPIPC'),
+('MHHVF FAM');
+
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+---------------------------------------------------------------------------------Mercy Concordancy table-----------------------------------------------------------------------------------------------------------------
+
+
+SELECT distinct CC.*,
+case when CC.[Drug Choice]='Concordant Drug Choice' and cc.kg_based_min=1 and cc.kg_based_max=1 and 
+				(
+					(cc.Overall_Dose =cc.Weight_in_KG*cc.[RTR Min])
+				 or (cc.Overall_Dose =cc.Weight_in_KG*cc.[RTR Max])
+				 or (cc.Overall_Dose between cc.Weight_in_KG*cc.[RTR Min] and cc.Weight_in_KG*cc.[RTR Max])
+				)
+	 then 'Concordant Dosing'
+
+	 when CC.[Drug Choice]='Concordant Drug Choice' and cc.kg_based_max=0 and cc.kg_based_min=1 and
+				(
+					(cc.Overall_Dose =cc.Weight_in_KG*cc.[RTR Min]) 
+				 or (cc.Overall_Dose =cc.[RTR Max]) 
+				 or (cc.Overall_Dose between cc.Weight_in_KG*cc.[RTR Min] and cc.[RTR Max])
+				)
+	 then 'Concordant Dosing'
+
+	 when CC.[Drug Choice]='Concordant Drug Choice' and cc.kg_based_min=0 and cc.kg_based_max=1 and
+				(
+					(cc.Overall_Dose =cc.[RTR Max])
+				 or (cc.Overall_Dose =cc.Weight_in_KG*cc.[RTR Max])
+				 or (cc.Overall_Dose between cc.[RTR Min] and cc.Weight_in_KG*cc.[RTR Max])
+				)
+	 then 'Concordant Dosing'
+
+	 when CC.[Drug Choice]='Concordant Drug Choice' and cc.kg_based_max =0 and cc.kg_based_min=0 and
+				(
+					(cc.Overall_Dose =cc.[RTR Min])
+				 or (cc.Overall_Dose =cc.[RTR Max])
+				 or(cc.Overall_Dose between cc.[RTR Min] and cc.[RTR Max]))
+	 then 'Concordant Dosing'
+
+	 when CC.[Drug Choice]='Concordant Drug Choice' and  cc.kg_based_max=1 and cc.kg_based_min=1 and
+		cc.Overall_Dose>cc.Weight_in_KG*cc.[RTR Max]
+	 then 'Higher Than Recommended'
+
+	 when CC.[Drug Choice]='Concordant Drug Choice' and  cc.kg_based_max=0 and cc.kg_based_min=1 and
+		cc.Overall_Dose>cc.[RTR Max] 
+	 then 'Higher Than Recommended'
+
+	 when CC.[Drug Choice]='Concordant Drug Choice' and  cc.kg_based_max=1 and cc.kg_based_min=0 and
+		cc.Overall_Dose>cc.Weight_in_KG*cc.[RTR Max] 
+	 then 'Higher Than Recommended'
+
+	 when CC.[Drug Choice]='Concordant Drug Choice' and  cc.kg_based_max=0 and cc.kg_based_min=0 and
+		Overall_Dose>cc.[RTR Max] 
+	 then 'Higher Than Recommended'
+
+	 when CC.[Drug Choice]='Concordant Drug Choice' and  cc.kg_based_min=1 and cc.kg_based_max=1 and
+		cc.Overall_Dose<cc.Weight_in_KG*cc.[RTR Min] 
+	 then 'Lower Than Recommended'
+
+	 when CC.[Drug Choice]='Concordant Drug Choice' and  cc.kg_based_min=0 and cc.kg_based_max=1 and
+		cc.Overall_Dose<cc.[RTR Min] 
+	 then 'Lower Than Recommended'
+
+	 when CC.[Drug Choice]='Concordant Drug Choice' and  cc.kg_based_min=1 and cc.kg_based_max=0 and
+		cc.Overall_Dose<cc.Weight_in_KG*cc.[RTR Min] 
+	 then 'Lower Than Recommended'
+
+	 when CC.[Drug Choice]='Concordant Drug Choice' and  cc.kg_based_max=0 and cc.kg_based_min=0 and
+		Overall_Dose<cc.[RTR Min]
+	 then 'Lower Than Recommended'
+
+	 else 'Incomplete Information'
+	 end as Overall_Dosing_comparision
+--into CHARM_CONCORDANCE_Mercy_JAN26
+FROM 
+		(
+
+		select distinct 
+		sd.PrescriptionID,
+		sd.dose_in_mg as Single_Dose,
+		sd.dose_in_mg*sd.Duration*sd.Frequency as Overall_Dose,
+		sd.capsule_based_overall_dose,		
+		sd.dose_in_mg*sd.Frequency as Daily_Dose,
+		sd.Age_group,
+		sd.Duration,
+		case when r.kg_based_max =1 then 'Kg/mg' else 'mg' end as Overall_Dose_Unit,
+		case when r.kg_based_max =1 then (dose_in_mg*sd.Duration*sd.Frequency)/Weight_in_KG else dose_in_mg*sd.Duration*sd.Frequency end as Overall_Dose_GauntChart,
+		r.Indication as RTR_Indication,
+		r.[Rx Name] as RTR_RxName,
+		sdg.Diagnosis_RTR as Diagnosis_Group,
+		sd.Antibiotic_Name,
+		r.[Min Duration (days)],
+		r.[Max Duration (days)],
+		r.[RTR Min],
+		r.[RTR Max],
+		r.[Min Daily Dose (mg)] as Rtr_MinDailyDose,
+		r.[Max Daily Dose (mg)] as Rtr_MaxDailyDose,
+		r.kg_based_max,
+		r.kg_based_min,
+		sd.Weight_in_KG,
+		--sd.age_group,
+		case when sdg.Diagnosis_RTR= r.indication and sd.Antibiotic_Name=r.[Rx Name] and sd.Age_group=r.[Age Group] then 'Concordant Drug Choice'
+			 else 'Discordant Drug Choice'
+			 end as 'Drug Choice'
+		from CHARM_DETAILS_JAN26 sd 
+		inner join CHARM_DiAGNOSIS_JAN26 sdg on sd.EncounterID=sdg.EncounterID 
+		left join rtr_mercy r on sdg.Diagnosis_RTR= r.Indication and sd.Antibiotic_Name=r.[Rx Name] and r.[Age Group]=sd.age_group
+		where sdg.Diagnosis_RTR in (select distinct Indication from rtr_mercy)
+)CC 
+where Antibiotic_Name is not null 
+order by cc.[Drug Choice],Overall_Dosing_comparision
+
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+--Replace sex values other than male/female with other/unknown
+select DISTINCT sex from CHARM_DETAILS_JAN26
+
+UPDATE CHARM_DETAILS_JAN26
+set Sex = 'Other/Unknown'
+where Sex not in ('Male', 'Female')
+
+
+--Check all tables
+--These should be the monthly tables NOT the main tables
+select * from CHARM_DETAILS_JAN26 order by Encounter_Date
+select * from CHARM_DIAGNOSIS_JAN26
+select * from CHARM_CONCORDANCE_JAN26
+select * from CHARM_DENOMINATOR_JAN26 order by Encounter_Date
+select * from CHARM_CONCORDANCE_MERCY_JAN26
+
+-- details, diagnosis and concordance table for the particular month is ready. make sure duplicated prescription id not in the main details page
+select * from charm_details cd inner join CHARM_DETAILS_JAN26 cj on cd.PrescriptionID=cj.PrescriptionID
+select * from charm_concordance cd inner join CHARM_CONCORDANCE_JAN26 cj on cd.PrescriptionID=cj.PrescriptionID
+select * from CHARM_CONCORDANCE_MERCY cd inner join CHARM_CONCORDANCE_MERCY_JAN26 cj on cd.PrescriptionID=cj.PrescriptionID
+
+--run insert query to insert monthly data to the central table that is connected to powerbi
+insert into CHARM_DETAILS select * from CHARM_DETAILS_JAN26
+insert into CHARM_DIAGNOSIS select * from CHARM_DIAGNOSIS_JAN26
+insert into CHARM_CONCORDANCE select * from CHARM_CONCORDANCE_JAN26
+insert into CHARM_DENOMINATOR select * from CHARM_DENOMINATOR_JAN26
+insert into CHARM_CONCORDANCE_MERCY select * from CHARM_CONCORDANCE_MERCY_JAN26
+
+--run query to reduce the amount of rows where diagnosis_grouping is non-infectious 
+delete  from CHARM_DIAGNOSIS where encounterid in (
+select encounterid from CHARM_DIAGNOSIS cd where encounterid in (select encounterid from CHARM_DIAGNOSIS where antibiotic_needed=3) and antibiotic_needed<>3)
+and antibiotic_needed=3
+
+--Double check all main tables
+select * from CHARM_DETAILS order by Encounter_Date DESC
+select * from CHARM_DIAGNOSIS
+select * from CHARM_CONCORDANCE
+select * from CHARM_DENOMINATOR order by Encounter_Date
+select * from CHARM_CONCORDANCE_MERCY
+
+
+select 
+cd.Antibiotic_Raw, 
+cd.Antibiotic_Dose,
+'' as Patient_Instructions,
+cd.Antibiotic_Name,
+cd.Dose_in_mg,
+cd.Antibiotic_Unit_of_Measure,
+cd.Frequency,
+cd.Duration
+from CHARM_DETAILS cd
+where cd.Encounter_Date >= '2025-03-31' and cd.Dose_in_mg is not null and cd.Duration is not null and cd.Frequency is not null
+order by newid()
+
+
+select * from facility_mapping
+select * from department_mapping
+
+select distinct antibiotic_name from CHARM_DETAILS_JAN26
+
+select facility, Provider_Name from CHARM_DETAILS
