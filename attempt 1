@@ -13,6 +13,14 @@ FROM information_schema.columns
 WHERE table_name = 'raw_Details_JAN26' order by COLUMN_NAME
 
 ------------------------------------------------------------------------------
+--cONVERT dATE TO datetime
+  ALTER TABLE dbo.UKY_RAW_DETAILS_ALL
+ALTER COLUMN DATE_OF_ENCOUNTER datetime;
+
+ALTER TABLE dbo.UKY_RAW_DETAILS_ALL
+ALTER COLUMN WEEK_OF_ENCOUNTER datetime;
+
+
 --Scripts to alter and update column Encounter_ID
 ALTER TABLE dbo.UKY_RAW_DETAILS_ALL
 ALTER COLUMN ENCOUNTER_ID NVARCHAR(50);
@@ -141,3 +149,37 @@ FROM (
     FROM dbo.UKY_RAW_DETAILS_ALL
     WHERE DEPARTMENT IS NOT NULL
 ) 
+-------------------------------------------------------------
+--Add Age Group
+
+ALTER TABLE dbo.UKY_RAW_DETAILS_ALL
+ADD AGE_GROUP varchar(10);
+
+UPDATE dbo.UKY_RAW_DETAILS_ALL
+SET AGE_GROUP =
+    CASE
+        WHEN AGE_AT_ENCOUNTER < 18 THEN 'CHILD'
+        ELSE 'ADULT'
+    END;
+
+--Add AGE Range
+ALTER TABLE dbo.UKY_RAW_DETAILS_ALL
+ADD AGE_RANGE varchar(10);
+
+UPDATE dbo.UKY_RAW_DETAILS_ALL
+SET AGE_RANGE =
+    CASE
+        WHEN AGE_AT_ENCOUNTER BETWEEN 0 AND 9 THEN '0-9'
+        WHEN AGE_AT_ENCOUNTER BETWEEN 10 AND 19 THEN '10-19'
+        WHEN AGE_AT_ENCOUNTER BETWEEN 20 AND 29 THEN '20-29'
+        WHEN AGE_AT_ENCOUNTER BETWEEN 30 AND 39 THEN '30-39'
+        WHEN AGE_AT_ENCOUNTER BETWEEN 40 AND 49 THEN '40-49'
+        WHEN AGE_AT_ENCOUNTER BETWEEN 50 AND 59 THEN '50-59'
+        WHEN AGE_AT_ENCOUNTER BETWEEN 60 AND 69 THEN '60-69'
+        WHEN AGE_AT_ENCOUNTER BETWEEN 70 AND 79 THEN '70-79'
+        WHEN AGE_AT_ENCOUNTER >= 80 THEN '80+'
+        ELSE 'UNKNOWN'
+    END;
+=======================================================
+
+
