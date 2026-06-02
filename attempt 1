@@ -181,5 +181,49 @@ SET AGE_RANGE =
         ELSE 'UNKNOWN'
     END;
 =======================================================
+-clean race
+
+ALTER TABLE [UofK].[dbo].[UKY_RAW_DETAILS_ALL]
+ADD CLEAN_RACE nvarchar(100);
+UPDATE [UofK].[dbo].[UKY_RAW_DETAILS_ALL]
+SET CLEAN_RACE =
+    CASE 
+        WHEN [RACE] IS NULL 
+          OR [RACE] IN ('UNKNOWN', 'NULL', 'REFUSED', 'Unable to respond')
+            THEN 'Unknown'
+
+        WHEN [RACE] IN ('AMERICAN INDIAN - ALASKA NATIVE', 'Am Indian/Alask')
+            THEN 'American Indian or Alaska Native'
+
+        WHEN [RACE] = 'MORE THAN ONE RACE'
+            THEN 'Other'
+
+        WHEN [RACE] IN (
+            'Native Hawaiian or Other Pacific Islander',
+            'Native Hawaiian',
+            'Other Pacific Islander'
+        )
+            THEN 'Native Hawaiian and Other Pacific Islander'
+
+        WHEN [RACE] = 'English'
+            THEN 'White'
+
+        WHEN [RACE] IN (
+            'Asian Indian',
+            'Filipino',
+            'Vietnamese',
+            'Korean',
+            'Chinese'
+        )
+            THEN 'Asian'
+
+        ELSE [RACE]
+    END;
 
 
+-- Create a new table with only RX_NAME and ANTIBIOTIC_Y_N columns
+SELECT DISTINCT
+    RX_NAME,
+    ANTIBIOTIC_Y_N
+INTO ANTIBIOTIC_YES
+FROM dbo.UKY_RAW_DETAILS_ALL;
