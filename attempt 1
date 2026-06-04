@@ -275,3 +275,170 @@ WHERE NOT EXISTS
     WHERE m.Rx = d.RX_NAME
 )
 ORDER BY d.RX_NAME;
+--------fREQUENCY TABLE MAPPING--------------
+CREATE TABLE dbo.UKY_FREQUENCY_MAPPING
+(
+    ANTIBIOTIC_FREQUENCY VARCHAR(255) NOT NULL PRIMARY KEY,
+    Updated_Frequency DECIMAL(10,2) NULL
+----------------------------------------------------------
+INSERT INTO dbo.UKY_FREQUENCY_MAPPING (ANTIBIOTIC_FREQUENCY)
+SELECT DISTINCT LTRIM(RTRIM(d.ANTIBIOTIC_FREQUENCY))
+FROM dbo.UKY_RAW_DETAILS_ALL d
+WHERE d.ANTIBIOTIC_FREQUENCY IS NOT NULL
+  AND LTRIM(RTRIM(d.ANTIBIOTIC_FREQUENCY)) <> ''
+  AND NOT EXISTS
+  (
+      SELECT 1
+      FROM dbo.UKY_FREQUENCY_MAPPING m
+      WHERE m.ANTIBIOTIC_FREQUENCY =
+            LTRIM(RTRIM(d.ANTIBIOTIC_FREQUENCY))
+  );
+);
+
+--MAPPING LOGIC
+SELECT *
+FROM dbo.UKY_FREQUENCY_MAPPING
+WHERE Updated_Frequency IS NULL
+ORDER BY ANTIBIOTIC_FREQUENCY;
+
+UPDATE dbo.UKY_FREQUENCY_MAPPING
+SET Updated_Frequency =
+    CASE
+        -- Unknown / cannot calculate
+        WHEN ANTIBIOTIC_FREQUENCY IN
+        (
+            '*Unspecified',
+            'As Directed',
+            'As needed',
+            'Titrated',
+            'Continuous',
+            'Continuous PRN',
+            'Continuous TPN',
+            'Over 22 hours',
+            'Over 48 hours'
+        ) THEN NULL
+
+        -- One-time / procedure-related
+        WHEN ANTIBIOTIC_FREQUENCY LIKE 'Once%' THEN 1
+        WHEN ANTIBIOTIC_FREQUENCY LIKE '%Prior%Procedure%' THEN 1
+        WHEN ANTIBIOTIC_FREQUENCY = 'At bedtime before procedure' THEN 1
+
+        -- Daily style
+        WHEN ANTIBIOTIC_FREQUENCY IN
+        (
+            'Daily',
+            'Daily (1600)',
+            'Daily at noon',
+            'Daily before breakfast',
+            'Daily before dinner',
+            'Daily before lunch',
+            'Daily PRN',
+            'Daily with breakfast',
+            'Daily with dinner',
+            'Daily with lunch',
+            'Daily: Morning',
+            'Every 24 hours',
+            'Every 24 hours PRN',
+            'Every 24 hours scheduled',
+            'Every evening',
+            'Every evening (1800)',
+            'EVERY EVENING PRN',
+            'Every morning',
+            'Every morning (0600)',
+            'EVERY MORNING PRN',
+            'Nightly',
+            'Nightly PRN'
+        ) THEN 1
+
+        -- Twice daily
+        WHEN ANTIBIOTIC_FREQUENCY LIKE '2 times daily%' THEN 2
+        WHEN ANTIBIOTIC_FREQUENCY LIKE '2 times nightly%' THEN 2
+        WHEN ANTIBIOTIC_FREQUENCY IN
+        (
+            'Daily at breakfast and at bedtime',
+            'Daily in the morning and at bedtime',
+            'Daily in the morning and before bedtime',
+            'Daily in the morning and in the evening',
+            'Daily with breakfast and dinner',
+            'Every 12 hours',
+            'Every 12 hours PRN',
+            'Every 12 hours scheduled',
+            'Every 12 hours with food',
+            'Every morning and afternoon'
+        ) THEN 2
+
+        -- Three times daily
+        WHEN ANTIBIOTIC_FREQUENCY LIKE '3 times daily%' THEN 3
+        WHEN ANTIBIOTIC_FREQUENCY IN
+        (
+            'Daily in the morning, at noon and in the evening',
+            'Every 8 hours',
+            'Every 8 hours PRN',
+            'Every 8 hours scheduled'
+        ) THEN 3
+
+        -- Four times daily
+        WHEN ANTIBIOTIC_FREQUENCY LIKE '4 times daily%' THEN 4
+        WHEN ANTIBIOTIC_FREQUENCY IN
+        (
+            'Every 6 hours',
+            'Every 6 hours PRN',
+            'Every 6 hours RT',
+            'Every 6 hours scheduled'
+        ) THEN 4
+
+        -- More frequent
+        WHEN ANTIBIOTIC_FREQUENCY LIKE '5 times daily%' THEN 5
+        WHEN ANTIBIOTIC_FREQUENCY = '6 times daily' THEN 6
+        WHEN ANTIBIOTIC_FREQUENCY = '8 times daily' THEN 8
+        WHEN ANTIBIOTIC_FREQUENCY IN ('Every 4 hours', 'Every 4 hours PRN', 'Every 4 hours scheduled', 'Every 4 hours while awake') THEN 6
+        WHEN ANTIBIOTIC_FREQUENCY IN ('Every 3 hours', 'Every 3 hours PRN', 'Every 3 hours scheduled') THEN 8
+        WHEN ANTIBIOTIC_FREQUENCY IN ('Every 2 hours', 'Every 2 hour PRN', 'Every 2 hours scheduled', 'Every 2 hours while awake') THEN 12
+        WHEN ANTIBIOTIC_FREQUENCY IN ('Every 1 hour', 'Every 1 hour PRN', 'Every 1 hour while awake') THEN 24
+
+        -- PRN ranges: use conservative low end
+        WHEN ANTIBIOTIC_FREQUENCY LIKE 'Every 3-4 hours%' THEN 6
+        WHEN ANTIBIOTIC_FREQUENCY LIKE 'Every 4-6 hours%' THEN 4
+        WHEN ANTIBIOTIC_FREQUENCY LIKE 'Every 6-8 hours%' THEN 3
+        WHEN ANTIBIOTIC_FREQUENCY = 'Every 1 - 2 hours prn' THEN 12
+
+        -- Minutes: usually acute/procedure meds, not useful as daily maintenance frequency
+        WHEN ANTIBIOTIC_FREQUENCY LIKE 'Every % min%' THEN NULL
+
+        -- Every other day / spaced dosing
+        WHEN ANTIBIOTIC_FREQUENCY IN ('Every 48 hours', 'Every 48 hours PRN', 'Every other day', 'Every other day (0600)') THEN 0.5
+        WHEN ANTIBIOTIC_FREQUENCY IN ('Every 72 hours', 'Every 72 hours PRN', 'Every 3 days') THEN 0.3333
+        WHEN ANTIBIOTIC_FREQUENCY = 'Every 96 hours' THEN 0.25
+        WHEN ANTIBIOTIC_FREQUENCY = 'Every 5 days' THEN 0.2
+        WHEN ANTIBIOTIC_FREQUENCY IN ('Every 7 days', 'Weekly', 'Weekly (2100)') THEN 0.1429
+        WHEN ANTIBIOTIC_FREQUENCY = 'Every 10 days' THEN 0.1
+        WHEN ANTIBIOTIC_FREQUENCY IN ('Every 14 days', 'Every 14 Days (2100)') THEN 0.0714
+        WHEN ANTIBIOTIC_FREQUENCY = 'Every 15 days' THEN 0.0667
+        WHEN ANTIBIOTIC_FREQUENCY = 'Every 21 days' THEN 0.0476
+        WHEN ANTIBIOTIC_FREQUENCY = 'Every 28 days' THEN 0.0357
+        WHEN ANTIBIOTIC_FREQUENCY = 'Every 30 days' THEN 0.0333
+        WHEN ANTIBIOTIC_FREQUENCY = 'Every 56 days' THEN 0.0179
+        WHEN ANTIBIOTIC_FREQUENCY = 'Every 60 days' THEN 0.0167
+        WHEN ANTIBIOTIC_FREQUENCY = 'Every 84 Days' THEN 0.0119
+
+        -- Weekly/monthly patterns
+        WHEN ANTIBIOTIC_FREQUENCY = '2 times weekly' THEN 0.2857
+        WHEN ANTIBIOTIC_FREQUENCY = '3 times weekly' THEN 0.4286
+        WHEN ANTIBIOTIC_FREQUENCY = '4 times weekly' THEN 0.5714
+        WHEN ANTIBIOTIC_FREQUENCY = '5 times weekly' THEN 0.7143
+        WHEN ANTIBIOTIC_FREQUENCY = 'Every Mon-Wed-Fri' THEN 0.4286
+        WHEN ANTIBIOTIC_FREQUENCY = 'Every 6 Weeks' THEN 0.0238
+        WHEN ANTIBIOTIC_FREQUENCY = 'Every 8 Weeks' THEN 0.0179
+        WHEN ANTIBIOTIC_FREQUENCY = 'Every 12 weeks' THEN 0.0119
+        WHEN ANTIBIOTIC_FREQUENCY = 'Every 3 months' THEN 0.0111
+        WHEN ANTIBIOTIC_FREQUENCY = 'Every 4 months' THEN 0.0083
+        WHEN ANTIBIOTIC_FREQUENCY = 'Every 6 months' THEN 0.0056
+
+        ELSE NULL
+    END;
+
+--vERIFY
+SELECT *
+FROM dbo.UKY_FREQUENCY_MAPPING
+WHERE Updated_Frequency IS NULL
+ORDER BY ANTIBIOTIC_FREQUENCY;
