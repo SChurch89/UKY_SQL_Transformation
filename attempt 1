@@ -466,3 +466,160 @@ CASE
 
     ELSE NULL
 END;
+----
+ Create UKY concordance table
+-- Change table names if yours are slightly different
+
+SELECT DISTINCT
+    CC.*,
+
+    CASE
+        WHEN CC.[Drug Choice] = 'Concordant Drug Choice'
+             AND CC.kg_based_min = 1
+             AND CC.kg_based_max = 1
+             AND CC.Overall_Dose BETWEEN CC.BODYWEIGHT_KG * CC.RTR_Min
+                                     AND CC.BODYWEIGHT_KG * CC.RTR_Max
+        THEN 'Concordant Dosing'
+
+        WHEN CC.[Drug Choice] = 'Concordant Drug Choice'
+             AND CC.kg_based_min = 1
+             AND CC.kg_based_max = 0
+             AND CC.Overall_Dose BETWEEN CC.BODYWEIGHT_KG * CC.RTR_Min
+                                     AND CC.RTR_Max
+        THEN 'Concordant Dosing'
+
+        WHEN CC.[Drug Choice] = 'Concordant Drug Choice'
+             AND CC.kg_based_min = 0
+             AND CC.kg_based_max = 1
+             AND CC.Overall_Dose BETWEEN CC.RTR_Min
+                                     AND CC.BODYWEIGHT_KG * CC.RTR_Max
+        THEN 'Concordant Dosing'
+
+        WHEN CC.[Drug Choice] = 'Concordant Drug Choice'
+             AND CC.kg_based_min = 0
+             AND CC.kg_based_max = 0
+             AND CC.Overall_Dose BETWEEN CC.RTR_Min
+                                     AND CC.RTR_Max
+        THEN 'Concordant Dosing'
+
+        WHEN CC.[Drug Choice] = 'Concordant Drug Choice'
+             AND CC.kg_based_max = 1
+             AND CC.Overall_Dose > CC.BODYWEIGHT_KG * CC.RTR_Max
+        THEN 'Higher Than Recommended'
+
+        WHEN CC.[Drug Choice] = 'Concordant Drug Choice'
+             AND CC.kg_based_max = 0
+             AND CC.Overall_Dose > CC.RTR_Max
+        THEN 'Higher Than Recommended'
+
+        WHEN CC.[Drug Choice] = 'Concordant Drug Choice'
+             AND CC.kg_based_min = 1
+             AND CC.Overall_Dose < CC.BODYWEIGHT_KG * CC.RTR_Min
+        THEN 'Lower Than Recommended'
+
+        WHEN CC.[Drug Choice] = 'Concordant Drug Choice'
+             AND CC.kg_based_min = 0
+             AND CC.Overall_Dose < CC.RTR_Min
+        THEN 'Lower Than Recommended'
+
+        ELSE 'Incomplete Information'
+    END AS Overall_Dosing_Comparison
+
+-- INTO dbo.UKY_CONCORDANCE
+FROM
+(
+    SELECT DISTINCT
+        sd.ENCOUNTER_ID,
+        sd.FACILITY_CLINIC,
+        sd.DEPARTMENT,
+        sd.SEX,
+        sd.RACE,
+        sd.ETHNICITY,
+        sd.DATE_OF_ENCOUNTER,
+        sd.AGE_AT_ENCOUNTER,
+        sd.BODYWEIGHT_KG,
+        sd.INSURANCE_TYPE,
+        sd.PROVIDER_KEY,
+        sd.PROVIDER_TYPE,
+        sd.ENCOUNTER_TYPE,
+        sd.INDICATION_CODE,
+        sd.INDICATION_NAME,
+        sd.RX_NAME,
+        sd.Updated_Antibiotic_Name AS Antibiotic_Name,
+
+        sd.DOSAGE_IN_MG AS Single_Dose,
+        sd.ANTIBIOTIC_DURATION AS Duration,
+        sd.Updated_Frequency AS Frequency,
+
+sd.DOSAGE_IN_MG * sd.ANTIBIOTIC_DURATION * sd.Updated_Frequency AS Overall_Dose,
+sd.DOSAGE_IN_MG * sd.Updated_Frequency AS Daily_Dose,
+
+sd.AGE_GROUP,
+
+d.Diagnosis_Grouping AS Diagnosis_Group,
+
+        r.Indication AS RTR_Indication,
+        r.Rx_Name AS RTR_RxName,
+        r.Min_Duration_days,
+        r.Max_Duration_days,
+        r.RTR_Min,
+        r.RTR_Max,
+        r.Min_Daily_Dose_mg AS Rtr_MinDailyDose,
+        r.Max_Daily_Dose_mg AS Rtr_MaxDailyDose,
+        r.kg_based_min,
+        r.kg_based_max,
+
+        CASE
+            WHEN r.kg_based_max = 1 THEN 'Kg/mg'
+            ELSE 'mg'
+        END AS Overall_Dose_Unit,
+
+        CASE
+            WHEN r.kg_based_max = 1
+                THEN (sd.DOSAGE_IN_MG * sd.ANTIBIOTIC_DURATION * sd.Updated_Frequency) / NULLIF(sd.BODYWEIGHT_KG, 0)
+            ELSE sd.DOSAGE_IN_MG * sd.ANTIBIOTIC_DURATION * sd.Updated_Frequency
+        END AS Overall_Dose_GauntChart,
+
+        CASE
+            WHEN UPPER(LTRIM(RTRIM(d.Diagnosis_Grouping))) = UPPER(LTRIM(RTRIM(r.Indication)))
+             AND UPPER(LTRIM(RTRIM(sd.Updated_Antibiotic_Name))) = UPPER(LTRIM(RTRIM(r.Rx_Name)))
+             AND UPPER(LTRIM(RTRIM(sd.AGE_GROUP))) = UPPER(LTRIM(RTRIM(r.Age_Group)))
+            THEN 'Concordant Drug Choice'
+            ELSE 'Discordant Drug Choice'
+        END AS [Drug Choice]
+
+    FROM dbo.CHARM_DETAILS_MAY26 sd
+
+    INNER JOIN dbo.UKY_DIAGNOSIS d
+        ON sd.ENCOUNTER_ID = d.EncounterID
+
+    LEFT JOIN
+    (
+        SELECT
+            Indication,
+            Age_Group,
+            Rx_Name,
+            [Min_Daily_Dose_(mg)] AS Min_Daily_Dose_mg,
+            [Max_Daily_Dose_(mg)] AS Max_Daily_Dose_mg,
+            [Min_Duration_(days)] AS Min_Duration_days,
+            [Max_Duration_(days)] AS Max_Duration_days,
+            RTR_Min,
+            RTR_Max,
+            kg_based_min,
+            kg_based_max
+        FROM dbo.RTRTableSanfordBased
+    ) r
+        ON UPPER(LTRIM(RTRIM(d.Diagnosis_Grouping))) = UPPER(LTRIM(RTRIM(r.Indication)))
+       AND UPPER(LTRIM(RTRIM(sd.Updated_Antibiotic_Name))) = UPPER(LTRIM(RTRIM(r.Rx_Name)))
+       AND UPPER(LTRIM(RTRIM(sd.AGE_GROUP))) = UPPER(LTRIM(RTRIM(r.Age_Group)))
+
+    WHERE sd.Updated_Antibiotic_Name IS NOT NULL
+      AND d.Diagnosis_Grouping IN
+          (
+              SELECT DISTINCT Indication
+              FROM dbo.RTRTableSanfordBased
+          )
+) CC
+ORDER BY
+    CC.[Drug Choice],
+    Overall_Dosing_Comparison;
