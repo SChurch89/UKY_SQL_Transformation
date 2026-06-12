@@ -1,0 +1,458 @@
+# UKY CHARM Table Creation Instructions
+
+This script recreates the UKY CHARM tables directly from raw data. It does not include backup tables.
+
+Tables created:
+
+1. `CHARM_DETAILS`
+2. `CHARM_DENOMINATOR`
+3. `CHARM_DIAGNOSIS`
+4. `CHARM_CONCORDANCE`
+5. `CHARM_HEDIS`
+
+Source and mapping tables used:
+
+* `UKY_RAW_DETAILS_ALL`
+* `facility_mapping_UKY`
+* `department_mapping_UKY`
+* `UKY_ANTIBIOTIC_MAPPING`
+* `UKY_FREQUENCY_MAPPING`
+* `UKY_DIAGNOSIS_MAPPING`
+* `RTRTableSanfordBased`
+
+```sql
+/*==============================================================
+  UKY CHARM TABLE REBUILD SCRIPT
+  Creates:
+  1. CHARM_DETAILS
+  2. CHARM_DENOMINATOR
+  3. CHARM_DIAGNOSIS
+  4. CHARM_CONCORDANCE
+  5. CHARM_HEDIS
+==============================================================*/
+
+
+/*==============================================================
+  0. DROP EXISTING CHARM TABLES
+==============================================================*/
+
+DROP TABLE IF EXISTS dbo.CHARM_HEDIS;
+DROP TABLE IF EXISTS dbo.CHARM_CONCORDANCE;
+DROP TABLE IF EXISTS dbo.CHARM_DIAGNOSIS;
+DROP TABLE IF EXISTS dbo.CHARM_DENOMINATOR;
+DROP TABLE IF EXISTS dbo.CHARM_DETAILS;
+
+
+/*==============================================================
+  1. CREATE CHARM_DETAILS
+==============================================================*/
+
+SELECT DISTINCT
+    r.ENCOUNTER_ID AS EncounterID,
+    r.ENCOUNTER_ID AS PatientID,
+
+    r.FACILITY_CLINIC AS Facility,
+    fac.facilityid AS FacilityID,
+
+    r.DEPARTMENT AS Department,
+    dept.departmentid AS DepartmentID,
+
+    r.SEX AS Sex,
+    r.AGE_AT_ENCOUNTER AS Age,
+    r.AGE_RANGE AS Age_Range,
+    r.AGE_GROUP AS Age_Group,
+    r.CLEAN_RACE AS Race,
+    r.ETHNICITY AS Ethnicity,
+    r.INSURANCE_TYPE AS Insurance_Type,
+
+    r.DATE_OF_ENCOUNTER AS Encounter_Date,
+    r.WEEK_OF_ENCOUNTER AS Encounter_Week,
+
+    r.PROVIDER_KEY AS ProviderID,
+    r.PROVIDER_TYPE AS Provider_Type,
+    r.ENCOUNTER_TYPE AS Encounter_Type,
+
+    r.INDICATION_CODE AS ICD10Code,
+    r.INDICATION_NAME AS Diagnosis_Original,
+
+    r.RX_NAME AS Original_Rx_Name,
+    UPPER(abx.Updated_Antibiotic_Name) AS Antibiotic_Name,
+
+    CASE 
+        WHEN abx.Updated_Antibiotic_Name IS NOT NULL THEN 1
+        ELSE 0
+    END AS IsAntibiotic,
+
+    r.RX_ROUTE AS Route,
+    r.ANTIBIOTIC_DOSE AS Dose,
+    r.ANTIBIOTIC_UNIT_OF_MEASURE AS Dose_Unit,
+    r.DOSAGE_IN_MG AS Dose_in_mg,
+    r.ANTIBIOTIC_DURATION AS Duration,
+
+    r.ANTIBIOTIC_FREQUENCY AS Original_Frequency,
+    freq.Updated_Frequency AS Frequency,
+
+    r.ANTIBIOTIC_STRENGTH AS Strength,
+    r.ANTIBIOTIC_QUANTITY AS Quantity,
+    r.THERAPEUTIC_CLASS AS Therapeutic_Class,
+    r.ORDERED_AS_MNEMONIC AS Ordered_As_Mnemonic,
+    r.BODYWEIGHT_KG AS Weight_in_KG
+
+INTO dbo.CHARM_DETAILS
+FROM dbo.UKY_RAW_DETAILS_ALL r
+LEFT JOIN dbo.facility_mapping_UKY fac
+    ON r.FACILITY_CLINIC = fac.facility
+LEFT JOIN dbo.department_mapping_UKY dept
+    ON r.DEPARTMENT = dept.department
+LEFT JOIN dbo.UKY_ANTIBIOTIC_MAPPING abx
+    ON r.RX_NAME = abx.RX
+LEFT JOIN dbo.UKY_FREQUENCY_MAPPING freq
+    ON r.ANTIBIOTIC_FREQUENCY = freq.ANTIBIOTIC_FREQUENCY;
+
+
+/*==============================================================
+  2. CREATE CHARM_DENOMINATOR
+==============================================================*/
+
+SELECT DISTINCT
+    EncounterID,
+    PatientID,
+    Encounter_Date,
+    Encounter_Week,
+    Facility,
+    FacilityID,
+    Department,
+    DepartmentID,
+    Sex,
+    Age,
+    Age_Range,
+    Age_Group,
+    Race,
+    Ethnicity,
+    Insurance_Type,
+    ProviderID,
+    Provider_Type,
+    Encounter_Type,
+
+    CASE
+        WHEN MAX(IsAntibiotic) OVER (PARTITION BY EncounterID) = 1 THEN 1
+        ELSE 0
+    END AS antibiotic_or_nonantibiotic
+
+INTO dbo.CHARM_DENOMINATOR
+FROM dbo.CHARM_DETAILS;
+
+
+/*==============================================================
+  3. CREATE CHARM_DIAGNOSIS
+==============================================================*/
+
+SELECT DISTINCT
+    d.EncounterID,
+    d.Diagnosis_Original,
+    d.ICD10Code,
+    m.Diagnosis_Grouping,
+
+    CASE
+        WHEN m.Diagnosis_Grouping IS NOT NULL 
+             AND m.Diagnosis_Grouping <> 'Non-infectious'
+            THEN m.Diagnosis_Grouping
+        WHEN m.Diagnosis_Grouping = 'Non-infectious'
+            THEN d.Diagnosis_Original
+        ELSE d.Diagnosis_Original
+    END AS Diagnosis_MS,
+
+    m.Diagnosis_RTR,
+
+    CASE
+        WHEN m.Diagnosis_Grouping = 'Non-infectious' THEN 3
+        WHEN m.Diagnosis_Grouping IS NULL THEN NULL
+        ELSE 2
+    END AS antibiotic_needed
+
+INTO dbo.CHARM_DIAGNOSIS
+FROM dbo.CHARM_DETAILS d
+LEFT JOIN dbo.UKY_DIAGNOSIS_MAPPING m
+    ON d.ICD10Code = m.INDICATION_CODE;
+
+
+/*==============================================================
+  4. CREATE CHARM_CONCORDANCE
+==============================================================*/
+
+SELECT DISTINCT
+    d.EncounterID,
+    d.PatientID,
+    d.Age,
+    d.Age_Group,
+    d.Sex,
+    d.Weight_in_KG,
+
+    d.Original_Rx_Name,
+    d.Antibiotic_Name,
+    dx.Diagnosis_Grouping AS Diagnosis_Group,
+
+    d.Dose AS Single_Dose,
+    d.Frequency AS Daily_Dose,
+    d.Dose_in_mg,
+    d.Duration,
+
+    CASE 
+        WHEN d.Dose_in_mg IS NOT NULL 
+         AND d.Frequency IS NOT NULL
+            THEN d.Dose_in_mg * d.Frequency
+        ELSE NULL
+    END AS Overall_Dose,
+
+    r.Indication AS RTR_Indication,
+    r.Rx_Name AS RTR_RxName,
+
+    r.[Min_Daily_Dose_(mg)] AS Min_Daily_Dose_mg,
+    r.[Max_Daily_Dose_(mg)] AS Max_Daily_Dose_mg,
+    r.[Min_Duration_(days)] AS Min_Duration_days,
+    r.[Max_Duration_(days)] AS Max_Duration_days,
+
+    r.RTR_Min,
+    r.RTR_Max,
+    r.kg_based_min,
+    r.kg_based_max,
+
+    CASE 
+        WHEN dx.Diagnosis_Grouping IS NULL
+            THEN 'Incomplete Information'
+
+        WHEN dx.Diagnosis_Grouping IN (
+            'Non-infectious',
+            'Acute Bronchitis',
+            'Upper Respiratory Infection',
+            'Fungal Infection',
+            'COVID-19',
+            'Influenza'
+        )
+            THEN 'Not RTR Applicable'
+
+        WHEN r.Rx_Name IS NOT NULL
+            THEN 'Concordant Drug Choice'
+
+        ELSE 'Discordant Drug Choice'
+    END AS Drug_Choice,
+
+    CASE
+        WHEN d.Antibiotic_Name IS NULL 
+          OR dx.Diagnosis_Grouping IS NULL
+          OR d.Dose_in_mg IS NULL
+          OR d.Frequency IS NULL
+          OR d.Duration IS NULL
+            THEN 'Incomplete Information'
+
+        WHEN dx.Diagnosis_Grouping IN (
+            'Non-infectious',
+            'Acute Bronchitis',
+            'Upper Respiratory Infection',
+            'Fungal Infection',
+            'COVID-19',
+            'Influenza'
+        )
+            THEN 'Not RTR Applicable'
+
+        WHEN r.Rx_Name IS NULL
+            THEN 'Discordant Drug Choice'
+
+        WHEN r.kg_based_min = 1 
+         AND r.kg_based_max = 1
+         AND d.Weight_in_KG IS NOT NULL
+         AND (d.Dose_in_mg * d.Frequency) BETWEEN (d.Weight_in_KG * r.RTR_Min) 
+                                               AND (d.Weight_in_KG * r.RTR_Max)
+         AND d.Duration BETWEEN r.[Min_Duration_(days)] 
+                            AND r.[Max_Duration_(days)]
+            THEN 'Concordant Dosing'
+
+        WHEN r.kg_based_min = 1 
+         AND r.kg_based_max = 0
+         AND d.Weight_in_KG IS NOT NULL
+         AND (d.Dose_in_mg * d.Frequency) BETWEEN (d.Weight_in_KG * r.RTR_Min) 
+                                               AND r.RTR_Max
+         AND d.Duration BETWEEN r.[Min_Duration_(days)] 
+                            AND r.[Max_Duration_(days)]
+            THEN 'Concordant Dosing'
+
+        WHEN r.kg_based_min = 0 
+         AND r.kg_based_max = 1
+         AND d.Weight_in_KG IS NOT NULL
+         AND (d.Dose_in_mg * d.Frequency) BETWEEN r.RTR_Min 
+                                               AND (d.Weight_in_KG * r.RTR_Max)
+         AND d.Duration BETWEEN r.[Min_Duration_(days)] 
+                            AND r.[Max_Duration_(days)]
+            THEN 'Concordant Dosing'
+
+        WHEN r.kg_based_min = 0 
+         AND r.kg_based_max = 0
+         AND (d.Dose_in_mg * d.Frequency) BETWEEN r.RTR_Min 
+                                               AND r.RTR_Max
+         AND d.Duration BETWEEN r.[Min_Duration_(days)] 
+                            AND r.[Max_Duration_(days)]
+            THEN 'Concordant Dosing'
+
+        WHEN r.kg_based_min = 1 
+         AND d.Weight_in_KG IS NOT NULL
+         AND (d.Dose_in_mg * d.Frequency) < (d.Weight_in_KG * r.RTR_Min)
+            THEN 'Lower than recommended'
+
+        WHEN r.kg_based_min = 0
+         AND (d.Dose_in_mg * d.Frequency) < r.RTR_Min
+            THEN 'Lower than recommended'
+
+        WHEN r.kg_based_max = 1 
+         AND d.Weight_in_KG IS NOT NULL
+         AND (d.Dose_in_mg * d.Frequency) > (d.Weight_in_KG * r.RTR_Max)
+            THEN 'Higher than recommended'
+
+        WHEN r.kg_based_max = 0
+         AND (d.Dose_in_mg * d.Frequency) > r.RTR_Max
+            THEN 'Higher than recommended'
+
+        ELSE 'Incomplete Information'
+    END AS Overall_Dosing_comparision
+
+INTO dbo.CHARM_CONCORDANCE
+FROM dbo.CHARM_DETAILS d
+LEFT JOIN dbo.CHARM_DIAGNOSIS dx
+    ON d.EncounterID = dx.EncounterID
+LEFT JOIN dbo.RTRTableSanfordBased r
+    ON UPPER(dx.Diagnosis_Grouping) = UPPER(r.Indication)
+   AND REPLACE(UPPER(d.Antibiotic_Name), ' / ', '/') = REPLACE(UPPER(r.Rx_Name), ' / ', '/')
+   AND UPPER(d.Age_Group) = UPPER(r.Age_Group)
+WHERE d.IsAntibiotic = 1;
+
+
+/*==============================================================
+  5. CREATE CHARM_HEDIS
+==============================================================*/
+
+SELECT DISTINCT
+    den.PatientID,
+    den.EncounterID,
+    den.Sex,
+    den.Age,
+    den.Age_Range,
+    den.Age_Group,
+    den.Race,
+    den.Ethnicity,
+    den.Encounter_Date,
+    dx.Diagnosis_Original AS Original_Diagnosis,
+    den.ProviderID AS Provider,
+    den.FacilityID AS Facility,
+    dx.ICD10Code,
+    dx.Diagnosis_Grouping AS Diagnosis_Group,
+    den.antibiotic_or_nonantibiotic AS Antibiotic_Encounter,
+
+    CASE
+        WHEN dx.Diagnosis_Grouping = 'Acute Bronchitis' THEN 'AAB'
+        WHEN dx.Diagnosis_Grouping = 'Upper Respiratory Infection' THEN 'URI'
+        WHEN dx.Diagnosis_Grouping = 'Acute Sinusitis' THEN 'AXR'
+        ELSE NULL
+    END AS HEDIS_Measure,
+
+    CASE
+        WHEN den.antibiotic_or_nonantibiotic = 1 THEN 1
+        ELSE 0
+    END AS Antibiotic
+
+INTO dbo.CHARM_HEDIS
+FROM dbo.CHARM_DENOMINATOR den
+JOIN dbo.CHARM_DIAGNOSIS dx
+    ON den.EncounterID = dx.EncounterID
+WHERE dx.Diagnosis_Grouping IN (
+    'Acute Bronchitis',
+    'Upper Respiratory Infection',
+    'Acute Sinusitis'
+);
+
+
+/*==============================================================
+  6. VALIDATION CHECKS
+==============================================================*/
+
+SELECT COUNT(*) AS CHARM_DETAILS_Rows
+FROM dbo.CHARM_DETAILS;
+
+SELECT
+    COUNT(*) AS TotalRows,
+    COUNT(DISTINCT EncounterID) AS DistinctEncounters,
+    SUM(antibiotic_or_nonantibiotic) AS AntibioticEncounters
+FROM dbo.CHARM_DENOMINATOR;
+
+SELECT COUNT(*) AS CHARM_DIAGNOSIS_Rows
+FROM dbo.CHARM_DIAGNOSIS;
+
+SELECT COUNT(*) AS CHARM_CONCORDANCE_Rows
+FROM dbo.CHARM_CONCORDANCE;
+
+SELECT COUNT(*) AS CHARM_HEDIS_Rows
+FROM dbo.CHARM_HEDIS;
+
+SELECT Drug_Choice, COUNT(*) AS Records
+FROM dbo.CHARM_CONCORDANCE
+GROUP BY Drug_Choice
+ORDER BY Records DESC;
+
+SELECT Overall_Dosing_comparision, COUNT(*) AS Records
+FROM dbo.CHARM_CONCORDANCE
+GROUP BY Overall_Dosing_comparision
+ORDER BY Records DESC;
+
+SELECT
+    HEDIS_Measure,
+    Diagnosis_Group,
+    COUNT(*) AS Encounters,
+    SUM(Antibiotic) AS AntibioticEncounters
+FROM dbo.CHARM_HEDIS
+GROUP BY HEDIS_Measure, Diagnosis_Group
+ORDER BY HEDIS_Measure;
+```
+
+## Final Validation Results From UKY Rebuild
+
+Expected results from the completed rebuild:
+
+```text
+CHARM_DETAILS_Rows: 1,748,103
+
+CHARM_DENOMINATOR:
+TotalRows: 869,400
+DistinctEncounters: 869,400
+AntibioticEncounters: 124,993
+
+CHARM_DIAGNOSIS_Rows: 892,673
+
+CHARM_CONCORDANCE_Rows: 138,786
+
+CHARM_HEDIS_Rows: 30,457
+```
+
+Concordance summary:
+
+```text
+Not RTR Applicable: 79,760
+Concordant Drug Choice: 33,403
+Discordant Drug Choice: 22,267
+Incomplete Information: 3,356
+```
+
+HEDIS summary:
+
+```text
+AAB | Acute Bronchitis | 9,150 encounters | 4,785 antibiotic encounters
+AXR | Acute Sinusitis | 11,449 encounters | 9,399 antibiotic encounters
+URI | Upper Respiratory Infection | 9,858 encounters | 3,144 antibiotic encounters
+```
+
+Notes:
+
+* `CHARM_DETAILS` is created directly from `UKY_RAW_DETAILS_ALL`.
+* `IsAntibiotic` is based on `UKY_ANTIBIOTIC_MAPPING`, not raw `ANTIBIOTIC_Y_N`.
+* This prevents antifungals, urinary antiseptics, and other non-antibiotic medications from being included in antibiotic concordance unless they are intentionally mapped.
+* `CHARM_DENOMINATOR` is encounter-level.
+* `CHARM_DIAGNOSIS` joins diagnosis information to `UKY_DIAGNOSIS_MAPPING`.
+* `CHARM_CONCORDANCE` compares antibiotic choice and dosing to `RTRTableSanfordBased`.
+* `CHARM_HEDIS` includes AAB, URI, and AXR measures.
